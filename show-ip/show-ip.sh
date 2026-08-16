@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-#  show-ip  —  Host NIC + Docker network / container IPv4 & port overview
+#  show-ip  —  Host NIC + Docker network / container IPv4 & port Overview
 #
 #  1. HOST NICs        : IPv4/CIDR, MAC, MTU, state, driver, speed, and which
 #                        docker ipvlan/macvlan networks use the NIC as parent.
