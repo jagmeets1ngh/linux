@@ -73,7 +73,7 @@ One clear picture of a Docker host's IPv4 layout: host NICs, Docker networks, an
 ### 📜 Get the script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jagmeets1ngh/linux/main/show-ip/show-ip -o ~/show-ip
+curl -fsSL https://raw.githubusercontent.com/jagmeets1ngh/linux/main/show-ip/show-ip.sh -o ~/show-ip.sh
 ```
 
 <details>
@@ -89,6 +89,7 @@ Paste the script, then save and exit.
 ### ⚙️ Install
 
 ```bash
+cd ~
 chmod +x ~/show-ip
 sudo ~/show-ip --install
 ```
