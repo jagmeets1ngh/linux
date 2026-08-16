@@ -6,42 +6,54 @@ One clear picture of a Docker host's IPv4 layout: host NICs, Docker networks, an
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║       IPv4 ADDRESS LIST   ·   HOST NICs · DOCKER NETWORKS · CONTAINERS       ║
 ╟──────────────────────────────────────────────────────────────────────────────╢
-║ HOST    ubuntu-srv-21                  OS      Ubuntu 24.04.3 LTS x86_64     ║
-║ KERNEL  6.8.0-137-generic              UPTIME  12 days, 4 hours              ║
-║ DOCKER  27.3.1                         LOAD    0.15 0.10 0.09  (8 cpu)       ║
-║ TIME    2026-08-16 12:34:53 PDT        MEMORY  12.4G used / 31.3G            ║
+║ HOST    ubuntu-srv-26                  OS      Ubuntu 24.04.4 LTS x86_64     ║
+║ KERNEL  6.8.0-137-generic              UPTIME  2 days, 15 hours, 38 minutes  ║
+║ DOCKER  29.7.2                         LOAD    0.10 0.04 0.01  (6 cpu)       ║
+║ TIME    2026-08-16 12:54:44 PDT        MEMORY  1.1G used / 19.6G             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 ▌ HOST NICs
 ┌──────┬─────────┬─────────────────┬───────────────────┬───────┬────────────┬────────┬─────────────────────────────────────────────┐
 │ NIC  │ STATE   │ IPv4 / CIDR     │ MAC ADDRESS       │ MTU   │ DRIVER     │ SPEED  │ ROLE                                        │
 ├──────┼─────────┼─────────────────┼───────────────────┼───────┼────────────┼────────┼─────────────────────────────────────────────┤
-│ eth0 │ up      │ 10.70.21.254/16 │ 2a:02:02:70:20:21 │ 1500  │ virtio_net │ -      │ -                                           │
-│ eth1 │ up      │ 10.71.21.254/16 │ 1a:02:02:71:20:21 │ 1500  │ iavf       │ 25Gb/s │ parent of docker-ipv-services-21(ipvlan/l2) │
+│ eth0 │ up      │ 10.70.26.254/16 │ 2a:02:02:70:20:26 │ 1500  │ virtio_net │ -      │ -                                           │
+│ eth1 │ up      │ 10.72.26.254/16 │ 1a:02:02:72:20:26 │ 1500  │ iavf       │ 25Gb/s │ parent of docker-ipv-internal-26(ipvlan/l2) │
+│ eth2 │ up      │ 10.74.26.254/16 │ 1a:02:02:74:20:26 │ 1500  │ iavf       │ 25Gb/s │ -                                           │
+│ lo   │ unknown │ 127.0.0.1/8     │ -                 │ 65536 │ loopback   │ -      │ -                                           │
 └──────┴─────────┴─────────────────┴───────────────────┴───────┴────────────┴────────┴─────────────────────────────────────────────┘
 
 ▌ DOCKER NETWORKS
-┌────────────────────────┬────────┬────────┬─────────────────────┬────────────────┬───────────────┬───────┬────────────┐
-│ DOCKER NETWORK         │ DRIVER │ MODE   │ HOST IFACE / PARENT │ SUBNET         │ GATEWAY       │ SCOPE │ CONTAINERS │
-├────────────────────────┼────────┼────────┼─────────────────────┼────────────────┼───────────────┼───────┼────────────┤
-│ docker-br-mgmt-21      │ bridge │ bridge │ br-8a307bdc2dda     │ 172.20.10.0/24 │ 172.20.10.254 │ local │     1      │
-│ docker-ipv-services-21 │ ipvlan │ l2     │ eth1 (parent)       │ 10.71.0.0/16   │ 10.71.0.254   │ local │     3      │
-└────────────────────────┴────────┴────────┴─────────────────────┴────────────────┴───────────────┴───────┴────────────┘
+┌────────────────────────┬────────┬─────────────────┬─────────────────────┬──────────────────┬───────────────┬───────┬────────────┐
+│ DOCKER NETWORK         │ DRIVER │ MODE            │ HOST IFACE / PARENT │ SUBNET           │ GATEWAY       │ SCOPE │ CONTAINERS │
+├────────────────────────┼────────┼─────────────────┼─────────────────────┼──────────────────┼───────────────┼───────┼────────────┤
+│ bridge                 │ bridge │ bridge          │ docker0             │ 172.17.0.0/16    │ 172.17.0.1    │ local │     0      │
+│ docker-br-mgmt-26      │ bridge │ bridge          │ br-7c80d60e7bb9     │ 172.20.10.0/24   │ 172.20.10.254 │ local │     1      │
+│ docker-ipv-internal-26 │ ipvlan │ l2              │ eth1 (parent)       │ 10.72.0.0/16     │ 10.72.0.254   │ local │     1      │
+│ host                   │ host   │ host-ns         │ -                   │ -                │ -             │ local │     0      │
+│ none                   │ null   │ null            │ -                   │ -                │ -             │ local │     0      │
+│ npm-internal-26        │ bridge │ bridge,internal │ br-52b7e0de6a12     │ 172.20.142.96/29 │ 172.20.142.97 │ local │     2      │
+└────────────────────────┴────────┴─────────────────┴─────────────────────┴──────────────────┴───────────────┴───────┴────────────┘
 
 ▌ DOCKER CONTAINERS — STACKS, NETWORKS, IPs & PORTS
-┌──────────────┬─────────────────┬─────────┬────────────────────────┬───────────────┬────────────────┬───────────────┬─────────────────────────┐
-│ STACK        │ CONTAINER       │ STATE   │ DOCKER NETWORK         │ DRV/MODE      │ IP ADDRESS     │ GATEWAY       │ PORTS                   │
-├──────────────┼─────────────────┼─────────┼────────────────────────┼───────────────┼────────────────┼───────────────┼─────────────────────────┤
-│ npm-stack    │ npm-app         │ running │ docker-ipv-services-21 │ ipvlan/l2     │ 10.71.21.20/16 │ 10.71.0.254   │ ⇢ 10.71.21.20:80/tcp    │
-│              │                 │         │                        │               │                │               │ ⇢ 10.71.21.20:443/tcp   │
-│              │ npm-db          │ running │ npm-stack_default      │ bridge/bridge │ 172.22.0.2/16  │ 172.22.0.1    │ ⇢ 172.22.0.2:3306/tcp   │
-├──────────────┼─────────────────┼─────────┼────────────────────────┼───────────────┼────────────────┼───────────────┼─────────────────────────┤
-│ (standalone) │ dockge-21       │ running │ docker-br-mgmt-21      │ bridge/bridge │ 172.20.10.1/24 │ 172.20.10.254 │ *:5001 → 5001/tcp       │
-│              │ plex-21         │ running │ docker-ipv-services-21 │ ipvlan/l2     │ 10.71.21.10/16 │ 10.71.0.254   │ ⇢ 10.71.21.10:32400/tcp │
-└──────────────┴─────────────────┴─────────┴────────────────────────┴───────────────┴────────────────┴───────────────┴─────────────────────────┘
-   legend:  → published host:port to container port    ⇢ socket listening inside the container netns
+┌───────────┬────────────┬─────────┬────────────────────────┬───────────────┬───────────────────┬───────────────────┬───────────────┬───────────────────────────┐
+│ STACK     │ CONTAINER  │ STATE   │ DOCKER NETWORK         │ DRV/MODE      │ IP ADDRESS        │ MAC ADDRESS       │ GATEWAY       │ PORTS                     │
+├───────────┼────────────┼─────────┼────────────────────────┼───────────────┼───────────────────┼───────────────────┼───────────────┼───────────────────────────┤
+│ dockge-26 │ dockge-26  │ running │ docker-br-mgmt-26      │ bridge/bridge │ 172.20.10.1/24    │ b6:38:8b:d5:cd:22 │ 172.20.10.254 │ *:5001 → 5001/tcp         │
+├───────────┼────────────┼─────────┼────────────────────────┼───────────────┼───────────────────┼───────────────────┼───────────────┼───────────────────────────┤
+│ npm-26    │ npm-app-26 │ running │ docker-ipv-internal-26 │ ipvlan/l2     │ 10.72.26.100/16   │ -                 │ 10.72.0.254   │ ⇢ 10.72.26.100:80/tcp     │
+│           │            │         │                        │               │                   │                   │               │ ⇢ 10.72.26.100:81/tcp     │
+│           │            │         │                        │               │                   │                   │               │ ⇢ 10.72.26.100:443/tcp    │
+│           │            │         │                        │               │                   │                   │               │ ⇢ 10.72.26.100:3000/tcp   │
+│           │            │         │ npm-internal-26        │ bridge/bridge │ 172.20.142.100/29 │ 82:0d:72:87:0e:cb │ -             │ 80/tcp (not published)    │
+│           │            │         │                        │               │                   │                   │               │ 81/tcp (not published)    │
+│           │            │         │                        │               │                   │                   │               │ 443/tcp (not published)   │
+│           │            │         │                        │               │                   │                   │               │ ⇢ 172.20.142.100:3000/tcp │
+│           │ npm-db-26  │ running │ npm-internal-26        │ bridge/bridge │ 172.20.142.101/29 │ c6:6b:71:fc:d9:53 │ -             │ 3306/tcp (not published)  │
+└───────────┴────────────┴─────────┴────────────────────────┴───────────────┴───────────────────┴───────────────────┴───────────────┴───────────────────────────┘
+   legend:  → published host:port to container port    ⇢ socket listening inside the container netns    stacks = compose project / swarm namespace
+   6 loopback-bound socket(s) hidden — they are container-internal only (-L to show)
 
-   4 host NICs  ·  6 docker networks  ·  1 stack  ·  4/4 containers running
+   4 host NICs  ·  6 docker networks  ·  2 stacks  ·  3/3 containers running
 ```
 
 ## 💡 Why
