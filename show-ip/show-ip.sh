@@ -6,9 +6,12 @@
 #                        docker ipvlan/macvlan networks use the NIC as parent.
 #  2. DOCKER NETWORKS  : driver, mode (ipvlan l2/l3, macvlan bridge, bridge,
 #                        overlay...), host interface / parent NIC, subnet, gw.
-#  3. CONTAINERS       : one numbered row per (container x network) — a
-#                        container attached to two networks gets entries 1.
-#                        and 2. — with IP, MAC, gateway and PORTS.
+#  3. CONTAINERS       : grouped by STACK (compose project / swarm namespace).
+#                        One tall table row per stack; inside it each container
+#                        is numbered 1., 2., 3. ... and each container gets one
+#                        sub-block per bind IP: loopback first, then one block
+#                        per attached docker network with that network's IP,
+#                        gateway and only the ports reachable on that IP.
 #                        Ports = published NAT mappings (bridge) PLUS sockets
 #                        actually listening inside the container's netns, which
 #                        is the only way to see ports of IPVLAN/MACVLAN
@@ -19,7 +22,7 @@
 #===============================================================================
 set -uo pipefail
 
-VERSION="2.0"
+VERSION="3.1"
 PROG="${0##*/}"
 
 #--------------------------------- options ------------------------------------
@@ -29,6 +32,10 @@ SHOW_ALL=0                # include stopped containers
 SHOW_VETH=0               # include veth*/virtual leaf interfaces
 SCAN_PORTS=1              # peek into container netns for listening sockets
 DEPS_AUTO=1               # auto-install missing iproute2
+SHOW_MAC=1                # container MAC column
+SHOW_LOOPBACK=0           # 127.0.0.1-bound sockets: hidden unless -L
+LB_HIDDEN=0
+STACK_COUNT=0
 ONLY=""                   # host | net | ctr
 WATCH_INT=0
 DO_INSTALL=0
@@ -44,6 +51,9 @@ OPTIONS
   -a, --all            include stopped containers
   -v, --veth           also list veth*/virtual leaf interfaces
   -P, --no-ports       skip the in-namespace listening-port scan (faster)
+  -M, --no-mac         drop the container MAC column (narrower table)
+  -L, --loopback       also show 127.0.0.1-bound sockets (hidden by default:
+                       they are unreachable from outside the container)
       --skip-deps      do not auto-install iproute2; run degraded instead of
                        aborting when 'ip' / 'ss' are missing
   -H, --host-only      only the host NIC table
@@ -76,6 +86,9 @@ while [[ $# -gt 0 ]]; do
     -v|--veth)       SHOW_VETH=1 ;;
     -P|--no-ports)   SCAN_PORTS=0 ;;
     --skip-deps)     DEPS_AUTO=0 ;;
+    -M|--no-mac)     SHOW_MAC=0 ;;
+    -L|--loopback)   SHOW_LOOPBACK=1 ;;
+    -l|--no-loopback) SHOW_LOOPBACK=0 ;;
     -H|--host-only)  ONLY="host" ;;
     -N|--net-only)   ONLY="net" ;;
     -C|--containers) ONLY="ctr" ;;
@@ -235,6 +248,9 @@ vislen() {                                  # printable width, ANSI-aware
   printf '%s' "${#s}"
 }
 
+declare -a TBL_ALIGN=()
+tbl_align() { TBL_ALIGN[$1]="$2"; }      # $1 col index, $2 = l | c | r
+
 declare -a SPLIT=()
 split_row() {                                # newline-safe field splitter
   local s=$1
@@ -246,7 +262,7 @@ split_row() {                                # newline-safe field splitter
   SPLIT+=("$s")
 }
 
-tbl_init() { TBL=(); }
+tbl_init() { TBL=(); TBL_ALIGN=(); }
 tbl_rule() { TBL+=("$ROWSEP"); }
 tbl_row() {                                  # cells may contain newlines
   local -a a=(); local x
@@ -297,16 +313,22 @@ tbl_render() {
       while IFS= read -r line; do M["$j,$n"]="$line"; n=$((n+1)); done <<<"${c[j]:-}"
       H[j]=$n; (( n > h )) && h=$n
     done
-    local li out txt pad
+    local li out txt pad lpad rpad pre post
     for ((li=0;li<h;li++)); do
       out="${D}${VT}${R}"
       for ((j=0;j<ncols;j++)); do
         txt="${M[$j,$li]:-}"
         pad=$(( widths[j] - $(vislen "$txt") )); (( pad < 0 )) && pad=0
+        lpad=0; rpad=$pad
+        case "${TBL_ALIGN[j]:-l}" in
+          c) lpad=$(( pad / 2 )); rpad=$(( pad - lpad )) ;;
+          r) lpad=$pad; rpad=0 ;;
+        esac
+        pre=$(printf "%${lpad}s" ""); post=$(printf "%${rpad}s" "")
         if (( hdr )); then
-          out+=" ${B}${WHT}${txt}${R}$(printf "%${pad}s" "") ${D}${VT}${R}"
+          out+=" ${pre}${B}${WHT}${txt}${R}${post} ${D}${VT}${R}"
         else
-          out+=" ${txt}$(printf "%${pad}s" "") ${D}${VT}${R}"
+          out+=" ${pre}${txt}${post} ${D}${VT}${R}"
         fi
       done
       printf '%s\n' "$out"
@@ -328,26 +350,86 @@ title() {
 }
 note() { printf '%s   %s%s\n' "$D" "$1" "$R"; }
 
+#------------------------------- system facts ---------------------------------
+os_pretty() {
+  local v=""
+  [[ -r /etc/os-release ]] && v=$(awk -F= '/^PRETTY_NAME=/{gsub(/"/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null)
+  [[ -z "$v" ]] && v="$(uname -s 2>/dev/null)"
+  printf '%s %s' "${v:-unknown}" "$(uname -m 2>/dev/null)"
+}
+uptime_str() {
+  local u="" s d h m
+  u=$(uptime -p 2>/dev/null); u=${u#up }
+  if [[ -z "$u" && -r /proc/uptime ]]; then
+    s=$(cut -d' ' -f1 /proc/uptime 2>/dev/null); s=${s%.*}
+    d=$(( s/86400 )); h=$(( (s%86400)/3600 )); m=$(( (s%3600)/60 ))
+    (( d )) && u="${d}d "
+    u+="${h}h ${m}m"
+  fi
+  printf '%s' "${u:--}"
+}
+load_str() {
+  local l n
+  l=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+  n=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+  printf '%s  (%s cpu)' "${l:--}" "${n:-?}"
+}
+mem_str() {
+  local t a
+  t=$(awk '/^MemTotal:/{print $2}'     /proc/meminfo 2>/dev/null)
+  a=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
+  [[ -z "$t" ]] && { printf '%s' "-"; return; }
+  [[ -z "$a" ]] && a=0
+  awk -v t="$t" -v a="$a" 'BEGIN{printf "%.1fG used / %.1fG", (t-a)/1048576, t/1048576}'
+}
+docker_ver() {
+  local v=""
+  case "$DOCKER_STATE" in
+    ok)      v=$($DOCKER version --format '{{.Server.Version}}' 2>/dev/null)
+             [[ -z "$v" ]] && v=$(docker --version 2>/dev/null | sed -e 's/^Docker version //' -e 's/,.*$//') ;;
+    denied)  printf '%s' "daemon unreachable"; return ;;
+    *)       printf '%s' "not installed"; return ;;
+  esac
+  printf '%s' "${v:-unknown}"
+}
+
 banner() {
-  local host when kern w=69
-  host="$(hostname 2>/dev/null || echo unknown)"
-  when="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  kern="$(uname -r 2>/dev/null)"
-  local l1="IPv4 ADDRESS LIST  ${G_DASH}  HOST NICs ${G_DOT} DOCKER NETWORKS ${G_DOT} CONTAINERS"
-  local l2="host: ${host}    kernel: ${kern}"
-  local l3="${when}    (${PROG} v${VERSION})"
-  local TLc TRc BLc BRc HZc VTc
-  if (( ASCII )); then TLc=+ TRc=+ BLc=+ BRc=+ HZc== VTc='|'
-  else TLc=╔ TRc=╗ BLc=╚ BRc=╝ HZc=═ VTc=║; fi
-  local bar="" i
-  for ((i=0;i<w;i++)); do bar+="$HZc"; done
-  printf '%s%s%s%s%s%s\n' "$B" "$BBLU" "$TLc" "$bar" "$TRc" "$R"
-  local ln pad
-  for ln in "$l1" "$l2" "$l3"; do
-    pad=$(( w - 2 - $(vislen "$ln") )); (( pad < 0 )) && pad=0
-    printf '%s%s%s%s %s%s %s%s%s\n' "$B" "$BBLU" "$VTc" "$R" "$ln" "$(printf "%${pad}s" "")" "$B$BBLU" "$VTc" "$R"
-  done
-  printf '%s%s%s%s%s%s\n' "$B" "$BBLU" "$BLc" "$bar" "$BRc" "$R"
+  local HALF=37 W=$(( 37*2 + 2 )) i
+  local TLc TRc BLc BRc HZc VTc LTc RTc SHZ ell
+  if (( ASCII )); then
+    TLc=+ TRc=+ BLc=+ BRc=+ HZc== VTc='|' LTc=+ RTc=+ SHZ=- ell="..."
+  else
+    TLc=╔ TRc=╗ BLc=╚ BRc=╝ HZc=═ VTc=║ LTc=╟ RTc=╢ SHZ=─ ell="…"
+  fi
+  local bar="" sbar=""
+  for ((i=0;i<W+2;i++)); do bar+="$HZc"; sbar+="$SHZ"; done
+
+  _bl() {                              # one framed line, content may hold ANSI
+    local c=$1 pad
+    pad=$(( W - $(vislen "$c") )); (( pad < 0 )) && pad=0
+    printf '%s%s%s %s%s %s%s%s\n' "$B$BBLU" "$VTc" "$R" "$c" \
+           "$(printf "%${pad}s" "")" "$B$BBLU" "$VTc" "$R"
+  }
+  _kv() {                              # $1 label $2 value -> HALF-wide cell
+    local lab=$1 val=$2 lab7 pad maxv
+    printf -v lab7 '%-7s' "$lab"
+    maxv=$(( HALF - 8 ))
+    (( ${#val} > maxv )) && val="${val:0:$((maxv-1))}${ell}"
+    pad=$(( HALF - 8 - ${#val} )); (( pad < 0 )) && pad=0
+    printf '%s%s%s %s%s%s%s' "$D" "$lab7" "$R" "$BCYN" "$val" "$R" "$(printf "%${pad}s" "")"
+  }
+
+  local t="IPv4 ADDRESS LIST   ${G_DOT}   HOST NICs ${G_DOT} DOCKER NETWORKS ${G_DOT} CONTAINERS"
+  local lp=$(( (W - ${#t}) / 2 )); (( lp < 0 )) && lp=0
+
+  printf '%s%s%s%s%s\n' "$B$BBLU" "$TLc" "$bar" "$TRc" "$R"
+  _bl "$(printf "%${lp}s" "")${B}${BYEL}${t}${R}"
+  printf '%s%s%s%s%s\n' "$B$BBLU" "$LTc" "$sbar" "$RTc" "$R"
+  _bl "$(_kv HOST   "$(hostname 2>/dev/null || echo unknown)")  $(_kv OS     "$(os_pretty)")"
+  _bl "$(_kv KERNEL "$(uname -r 2>/dev/null)")  $(_kv UPTIME "$(uptime_str)")"
+  _bl "$(_kv DOCKER "$(docker_ver)")  $(_kv LOAD   "$(load_str)")"
+  _bl "$(_kv TIME   "$(date '+%Y-%m-%d %H:%M:%S %Z')")  $(_kv MEMORY "$(mem_str)")"
+  printf '%s%s%s%s%s\n' "$B$BBLU" "$BLc" "$bar" "$BRc" "$R"
 }
 
 #------------------------------- docker probing -------------------------------
@@ -520,7 +602,8 @@ section_networks() {
   if [[ "$DOCKER_STATE" != "ok" ]]; then docker_hint; return; fi
   if (( ${#NET_ORDER[@]} == 0 )); then note "no docker networks."; return; fi
   tbl_init
-  tbl_row "DOCKER NETWORK" "DRIVER" "MODE" "HOST IFACE / PARENT" "SUBNET" "GATEWAY" "SCOPE" "CTRS"
+  tbl_row "DOCKER NETWORK" "DRIVER" "MODE" "HOST IFACE / PARENT" "SUBNET" "GATEWAY" "SCOPE" "CONTAINERS"
+  tbl_align 7 c
   local name drv mode ifc nc rest
   for name in "${NET_ORDER[@]}"; do
     drv="${NET_DRIVER[$name]}"; mode="${NET_MODE[$name]}"; rest="${mode#"${mode%%,*}"}"
@@ -565,108 +648,206 @@ fmt_pub() {                      # "0.0.0.0:8080,:::8080," -> "*:8080"
   printf '%s' "$out"
 }
 
+is_loopback() { case "$1" in 127.0.0.1|127.*|'[::1]'|'::1') return 0 ;; *) return 1 ;; esac; }
+is_wildcard() { case "$1" in 0.0.0.0|'*'|'::'|'[::]'|'') return 0 ;; *) return 1 ;; esac; }
+
+#--- one TALL table row per stack: cells are newline-joined column blocks ------
+Cstack=""; Cctr=""; Cstate=""; Cnet=""; Cmode=""; Cip=""; Cmac=""; Cgw=""; Cport=""
+BLK_N=0; STACK_LABEL=""; CTR_LABEL=""; STATE_LABEL=""; CFIRST=1
+
+_blk_reset() {
+  Cstack=""; Cctr=""; Cstate=""; Cnet=""
+  Cmode=""; Cip=""; Cmac=""; Cgw=""; Cport=""; BLK_N=0
+}
+_blk_add() {                     # 9 column values for ONE visual line
+  local sep=""; (( BLK_N > 0 )) && sep=$'\n'
+  Cstack+="${sep}$1"; Cctr+="${sep}$2";  Cstate+="${sep}$3"
+  Cnet+="${sep}$4";   Cmode+="${sep}$5"; Cip+="${sep}$6"
+  Cmac+="${sep}$7";   Cgw+="${sep}$8";   Cport+="${sep}$9"
+  BLK_N=$((BLK_N+1))
+}
+_blk_flush() {                   # emit the accumulated stack as one table row
+  (( BLK_N == 0 )) && return 0
+  if (( SHOW_MAC )); then
+    tbl_row "$Cstack" "$Cctr" "$Cstate" "$Cnet" "$Cmode" "$Cip" "$Cmac" "$Cgw" "$Cport"
+  else
+    tbl_row "$Cstack" "$Cctr" "$Cstate" "$Cnet" "$Cmode" "$Cip" "$Cgw" "$Cport"
+  fi
+  tbl_rule
+  _blk_reset
+}
+
+emit_block() {   # $1 net $2 mode $3 ip $4 mac $5 gw $6 port-lines(\n separated)
+  local net=$1 mode=$2 ip=$3 mac=$4 gw=$5 pl=$6
+  local bfirst=1 line s_st s_ctr s_state s_net s_mode s_ip s_mac s_gw
+  [[ -z "$pl" ]] && pl="${D}-${R}"
+  while IFS= read -r line; do
+    s_st=""; s_ctr=""; s_state=""
+    s_net=""; s_mode=""; s_ip=""; s_mac=""; s_gw=""
+    (( BLK_N == 0 )) && s_st="$STACK_LABEL"          # stack name: top-left only
+    if (( bfirst )); then
+      s_net="$net"; s_mode="$mode"; s_ip="$ip"; s_mac="$mac"; s_gw="$gw"
+      if (( CFIRST )); then s_ctr="$CTR_LABEL"; s_state="$STATE_LABEL"; fi
+    fi
+    _blk_add "$s_st" "$s_ctr" "$s_state" "$s_net" "$s_mode" "$s_ip" "$s_mac" "$s_gw" "$line"
+    bfirst=0
+  done <<<"$pl"
+  CFIRST=0
+}
+
+ports_for_net() {   # $1 driver $2 this network's IP   (uses PUB + lports)
+  local drv=$1 nip=$2 out="" k hp proto pno baddr disp
+  if [[ "$drv" == "bridge" || "$drv" == "overlay" || "$drv" == "?" ]]; then
+    while IFS= read -r k; do
+      [[ -z "$k" ]] && continue
+      hp=$(fmt_pub "${PUB[$k]}")
+      if [[ -n "$hp" ]]; then out+="${out:+$'\n'}${BYEL}${hp}${R} ${G_PUB} ${k}"
+      else                    out+="${out:+$'\n'}${D}${k} (not published)${R}"; fi
+    done < <( (( ${#PUB[@]} )) && printf '%s\n' "${!PUB[@]}" | sort -t/ -k1,1n )
+  fi
+  if [[ -n "$lports" ]]; then
+    while IFS='|' read -r proto pno baddr; do
+      [[ -z "$pno" ]] && continue
+      [[ "$out" == *"${pno}/${proto}"* ]] && continue
+      if   is_loopback "$baddr"; then continue                      # own block
+      elif is_wildcard "$baddr"; then disp="${nip:+${nip}:}${pno}"
+      elif [[ "$baddr" == "$nip" ]]; then disp="${nip}:${pno}"
+      else continue; fi                                # bound to another net IP
+      out+="${out:+$'\n'}${BCYN}${G_LSN} ${disp}${R}${D}/${proto}${R}"
+    done <<<"$lports"
+  fi
+  printf '%s' "$out"
+}
+
 section_containers() {
-  title "DOCKER CONTAINERS — NETWORKS, IPs & PORTS"
-  if [[ "$DOCKER_STATE" != "ok" ]]; then docker_hint; return; fi
+  title "DOCKER CONTAINERS — STACKS, NETWORKS, IPs & PORTS"
+  if [[ "$DOCKER_STATE" != "ok" ]]; then docker_hint; return 0; fi
 
   local ids
   if (( SHOW_ALL )); then ids=$($DOCKER ps -aq 2>/dev/null); else ids=$($DOCKER ps -q 2>/dev/null); fi
-  if [[ -z "$ids" ]]; then note "no containers."; return; fi
+  if [[ -z "$ids" ]]; then note "no containers."; return 0; fi
 
-  local fmt='{{.Id}}|{{.Name}}|{{.State.Status}}|{{.State.Pid}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}~{{$v.IPAddress}}~{{$v.IPPrefixLen}}~{{$v.MacAddress}}~{{$v.Gateway}}^{{end}}|{{range $p,$c := .NetworkSettings.Ports}}{{$p}}={{range $c}}{{.HostIp}}:{{.HostPort}},{{end}}^{{end}}'
+  local fmt='{{.Id}}|{{.Name}}|{{.State.Status}}|{{.State.Pid}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}~{{$v.IPAddress}}~{{$v.IPPrefixLen}}~{{$v.MacAddress}}~{{$v.Gateway}}^{{end}}|{{range $p,$c := .NetworkSettings.Ports}}{{$p}}={{range $c}}{{.HostIp}}:{{.HostPort}},{{end}}^{{end}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.stack.namespace"}}'
+
+  local -a REC=()
+  # shellcheck disable=SC2086
+  mapfile -t REC < <($DOCKER inspect --format "$fmt" $ids 2>/dev/null)
+  if (( ${#REC[@]} == 0 )); then note "no containers."; return 0; fi
+
+  # ---- order: stack (compose project / swarm namespace), then container name
+  local -a ORDER=()
+  mapfile -t ORDER < <(
+    for i in "${!REC[@]}"; do
+      IFS='|' read -r r_id r_name r_state r_pid r_nets r_ports r_proj r_ns <<<"${REC[i]}"
+      r_name=${r_name#/}
+      r_proj=$(sanitize "$r_proj"); r_ns=$(sanitize "$r_ns")
+      r_stack="$r_proj"; [[ -z "$r_stack" ]] && r_stack="$r_ns"
+      # NB: field separator must NOT be whitespace, or empty stack names collapse
+      if [[ -z "$r_stack" ]]; then printf '1%s%s%s%s%s%s\n' "$SEP" "$SEP" "$r_name" "$SEP" "$i" ""
+      else                         printf '0%s%s%s%s%s%s\n' "$SEP" "$r_stack" "$SEP" "$r_name" "$SEP" "$i"; fi
+    done | sort -t"$SEP" -f -k1,1 -k2,2 -k3,3
+  )
 
   tbl_init
-  tbl_row "#" "CONTAINER" "STATE" "DOCKER NETWORK" "DRV/MODE" "IP ADDRESS" "MAC ADDRESS" "GATEWAY" "PORTS"
+  if (( SHOW_MAC )); then
+    tbl_row "STACK" "CONTAINER" "STATE" "DOCKER NETWORK" "DRV/MODE" "IP ADDRESS" "MAC ADDRESS" "GATEWAY" "PORTS"
+  else
+    tbl_row "STACK" "CONTAINER" "STATE" "DOCKER NETWORK" "DRV/MODE" "IP ADDRESS" "GATEWAY" "PORTS"
+  fi
 
-  local cid cname cstate cpid nets ports
-  # shellcheck disable=SC2086
-  while IFS='|' read -r cid cname cstate cpid nets ports; do
-    [[ -z "$cid" ]] && continue
+  local entry grp key nm i prev="__none__"
+  local cid cname cstate cpid nets ports proj ns lports scol
+  local -a narr=() parr=()
+  local e nname nip npfx nmac ngw drv mode ipcell pcell p proto pno baddr lb
+
+  _blk_reset
+  for entry in "${ORDER[@]}"; do
+    IFS="$SEP" read -r grp key nm i <<<"$entry"
+
+    if [[ "${grp}:${key}" != "$prev" ]]; then          # ---- new stack group
+      _blk_flush
+      prev="${grp}:${key}"
+      [[ "$grp" == "0" ]] && STACK_COUNT=$((STACK_COUNT+1))
+      if [[ "$grp" == "1" ]]; then STACK_LABEL="${D}(standalone)${R}"
+      else                         STACK_LABEL="${B}${BMAG}${key}${R}"; fi
+    fi
+
+    IFS='|' read -r cid cname cstate cpid nets ports proj ns <<<"${REC[i]}"
     cname=${cname#/}
 
-    unset PUB; declare -A PUB=()
-    local -a parr=(); IFS='^' read -r -a parr <<<"$ports"
-    local p
-    for p in "${parr[@]}"; do
-      [[ -z "$p" ]] && continue
-      PUB["${p%%=*}"]="${p#*=}"
-    done
-
-    local lports=""
-    (( SCAN_PORTS )) && [[ "$cstate" == "running" ]] && lports=$(listen_ports "$cpid")
-
-    local scol
     case "$cstate" in
       running)     scol="${BGRN}running${R}" ;;
       exited|dead) scol="${BRED}${cstate}${R}" ;;
       paused)      scol="${BYEL}paused${R}" ;;
       *)           scol="${YEL}${cstate}${R}" ;;
     esac
+    CTR_LABEL="${B}${cname}${R}"; STATE_LABEL="$scol"; CFIRST=1
 
-    local -a narr=(); IFS='^' read -r -a narr <<<"$nets"
-    local idx=0 e nname nip npfx nmac ngw drv mode ipcell pcell k hp proto pno baddr disp label
+    unset PUB; declare -A PUB=()
+    parr=(); IFS='^' read -r -a parr <<<"$ports"
+    for p in "${parr[@]}"; do
+      [[ -z "$p" ]] && continue
+      PUB["${p%%=*}"]="${p#*=}"
+    done
 
+    lports=""
+    (( SCAN_PORTS )) && [[ "$cstate" == "running" ]] && lports=$(listen_ports "$cpid")
+
+    # ---- loopback-bound sockets: own block (only with -L), else just counted
+    if (( ! SHOW_LOOPBACK )) && [[ -n "$lports" ]]; then
+      while IFS='|' read -r proto pno baddr; do
+        [[ -n "$pno" ]] && is_loopback "$baddr" && LB_HIDDEN=$((LB_HIDDEN+1))
+      done <<<"$lports"
+    fi
+    if (( SHOW_LOOPBACK )) && [[ -n "$lports" ]]; then
+      lb=""
+      while IFS='|' read -r proto pno baddr; do
+        [[ -z "$pno" ]] && continue
+        is_loopback "$baddr" || continue
+        lb+="${lb:+$'\n'}${D}${G_LSN} 127.0.0.1:${pno}/${proto}${R}"
+      done <<<"$lports"
+      [[ -n "$lb" ]] && emit_block "${D}loopback${R}" "${D}host-local${R}" \
+                                   "${D}127.0.0.1/8${R}" "-" "-" "$lb"
+    fi
+
+    # ---- one block per attached docker network
+    narr=(); IFS='^' read -r -a narr <<<"$nets"
+    local nblocks=0
     for e in "${narr[@]}"; do
       [[ -z "$e" ]] && continue
-      idx=$((idx+1))
+      nblocks=$((nblocks+1))
       IFS='~' read -r nname nip npfx nmac ngw <<<"$e"
       drv="${NET_DRIVER[$nname]:-?}"; mode="${NET_MODE[$nname]:-?}"
 
       if [[ -n "$nip" ]]; then ipcell="${BGRN}${nip}${R}${D}/${npfx}${R}"
       else                     ipcell="${D}(none)${R}"; fi
 
-      pcell=""
       if [[ "$drv" == "host" ]]; then
         pcell="${D}shares the host netns${R}"
       elif [[ "$drv" == "null" || "$drv" == "none" ]]; then
         pcell="${D}no networking${R}"
       else
-        # 1) NAT-published ports (bridge / overlay only — ipvlan is never -p mapped)
-        if [[ "$drv" == "bridge" || "$drv" == "overlay" || "$drv" == "?" ]]; then
-          while IFS= read -r k; do
-            [[ -z "$k" ]] && continue
-            hp=$(fmt_pub "${PUB[$k]}")
-            if [[ -n "$hp" ]]; then pcell+="${pcell:+$'\n'}${BYEL}${hp}${R} ${G_PUB} ${k}"
-            else                    pcell+="${pcell:+$'\n'}${D}${k} (not published)${R}"; fi
-          done < <( (( ${#PUB[@]} )) && printf '%s\n' "${!PUB[@]}" | sort -t/ -k1,1n )
-        fi
-        # 2) sockets really listening inside the container netns
-        if [[ -n "$lports" ]]; then
-          while IFS='|' read -r proto pno baddr; do
-            [[ -z "$pno" ]] && continue
-            [[ "$pcell" == *"${pno}/${proto}"* ]] && continue
-            case "$baddr" in
-              0.0.0.0|'*'|'::'|'[::]'|'')  disp="${nip:+${nip}:}${pno}" ;;
-              127.0.0.1|'[::1]')           (( idx > 1 )) && continue
-                                           disp="127.0.0.1:${pno}" ;;
-              "$nip")                      disp="${nip}:${pno}" ;;
-              *)                           continue ;;   # bound to another net's IP
-            esac
-            pcell+="${pcell:+$'\n'}${BCYN}${G_LSN} ${disp}${R}${D}/${proto}${R}"
-          done <<<"$lports"
-        fi
+        pcell=$(ports_for_net "$drv" "$nip")
         if [[ -z "$pcell" ]]; then
           if   (( ! SCAN_PORTS ));                            then pcell="${D}(scan off)${R}"
           elif [[ -z "$NSENTER" && "$cstate" == "running" ]]; then pcell="${D}(need root)${R}"
           else                                                     pcell="${D}-${R}"; fi
         fi
       fi
-
-      label="${B}${cname}${R}"; (( idx > 1 )) && label="${D}${G_TREE}${R} ${cname}"
-      tbl_row "${BYEL}${idx}.${R}" "$label" "$scol" "${B}${nname}${R}" \
-              "$(drv_color "$drv")${D}/${R}$(mode_color "${mode%%,*}")" \
-              "$ipcell" "${nmac:--}" "${ngw:--}" "$pcell"
+      emit_block "${B}${nname}${R}" "$(drv_color "$drv")${D}/${R}$(mode_color "${mode%%,*}")" \
+                 "$ipcell" "${nmac:--}" "${ngw:--}" "$pcell"
     done
-    (( idx == 0 )) && tbl_row "1." "${B}${cname}${R}" "$scol" "${D}(no network)${R}" "-" "-" "-" "-" "-"
-    tbl_rule
-  done < <($DOCKER inspect --format "$fmt" $ids 2>/dev/null)
+    (( nblocks == 0 )) && emit_block "${D}(no network)${R}" "-" "${D}(none)${R}" "-" "-" "${D}-${R}"
+  done
+  _blk_flush
 
   local last=$(( ${#TBL[@]} - 1 ))
   (( last >= 0 )) && [[ "${TBL[last]}" == "$ROWSEP" ]] && unset "TBL[$last]"
   tbl_render
 
-  printf '%s   legend:  %s%s%s published host:port to container port    %s%s%s socket listening inside the container netns    %s%s%s same container, extra network%s\n' \
-    "$D" "$BYEL" "$G_PUB" "$D" "$BCYN" "$G_LSN" "$D" "$D" "$G_TREE" "$D" "$R"
+  printf '%s   legend:  %s%s%s published host:port to container port    %s%s%s socket listening inside the container netns    stacks = compose project / swarm namespace%s\n' \
+    "$D" "$BYEL" "$G_PUB" "$D" "$BCYN" "$G_LSN" "$D" "$R"
+  (( LB_HIDDEN > 0 )) && note "${LB_HIDDEN} loopback-bound socket(s) hidden — they are container-internal only (-L to show)"
   (( SCAN_PORTS )) && [[ -z "$NSENTER" ]] && \
     note "run with sudo to reveal listening ports (needed for IPVLAN/MACVLAN containers)"
   return 0
@@ -675,14 +856,16 @@ section_containers() {
 #---------------------------------- summary -----------------------------------
 section_summary() {
   local nnic nnet nrun ntot
+  plu() { if (( $1 == 1 )); then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi; }
   nnic=$(ls -1 /sys/class/net 2>/dev/null | grep -Ecv '^(veth|br-|docker|ifb|dummy|tunl|gre|erspan|ip6tnl|sit)' )
   nnet=${#NET_ORDER[@]}
   if [[ "$DOCKER_STATE" == "ok" ]]; then
     nrun=$($DOCKER ps  -q 2>/dev/null | wc -l | tr -d ' ')
     ntot=$($DOCKER ps -aq 2>/dev/null | wc -l | tr -d ' ')
   else nrun=0; ntot=0; fi
-  printf '\n%s   %s host NICs  %s  %s docker networks  %s  %s/%s containers running%s\n' \
-         "$D" "$nnic" "$G_DOT" "$nnet" "$G_DOT" "$nrun" "$ntot" "$R"
+  printf '\n%s   %s  %s  %s  %s  %s  %s  %s/%s containers running%s\n' \
+         "$D" "$(plu "$nnic" "host NIC")" "$G_DOT" "$(plu "$nnet" "docker network")" \
+         "$G_DOT" "$(plu "$STACK_COUNT" "stack")" "$G_DOT" "$nrun" "$ntot" "$R"
 }
 
 #------------------------------------ main ------------------------------------
