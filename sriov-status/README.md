@@ -6,25 +6,6 @@ Nothing is statically configured. Physical functions, PCI addresses, bond/bridge
 
 ![example output](screenshot.png)
 
-```
-━━ ice2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  PCI  0000:08:00.1   Intel Corporation Ethernet Controller E810-XXV for SFP
-  Drv  ice   fw 4.60 0x8001d1c5 1.3722.0   NUMA 0   MTU 9000   .link 10-ice2.link
-  Link up · 25000 Mbps · full   master TRUNK (bond)   eswitch legacy
-  VFs  24 enabled / 128 max   22 configured · 20 attached · 2 free
-┌──────┬──────────────┬───────────────────┬──────┬──────────┬──────┬────────────────────────────────┐
-│ VF#  │ PCI          │ MAC               │ VLAN │ Driver   │ Flg  │ Attached to                    │
-├──────┼──────────────┼───────────────────┼──────┼──────────┼──────┼────────────────────────────────┤
-│ VF0  │ 0000:08:11.0 │ 1a:01:02:71:01:00 │   71 │ vfio-pci │ S··· │ ● 100   jump-01      hostpci0  │
-│ VF1  │ 0000:08:11.1 │ 1a:01:02:72:01:00 │   72 │ vfio-pci │ S··· │ ● 100   jump-01      hostpci1  │
-├──────┼──────────────┼───────────────────┼──────┼──────────┼──────┼────────────────────────────────┤
-│ VF4  │ 0000:08:11.4 │ 1a:01:02:71:10:11 │   71 │ vfio-pci │ S··· │ ● 1011  edge-proxy-1 hostpci0  │
-│ VF5  │ 0000:08:11.5 │ 1a:01:02:74:10:11 │   74 │ vfio-pci │ S··· │ ● 1011  edge-proxy-1 hostpci1  │
-├──────┼──────────────┼───────────────────┼──────┼──────────┼──────┼────────────────────────────────┤
-│ VF22 │ 0000:08:13.6 │ 00:00:00:00:00:00 │    - │ iavf     │ S··· │ · -     free                   │
-└──────┴──────────────┴───────────────────┴──────┴──────────┴──────┴────────────────────────────────┘
-```
-
 ## Why
 
 `ip link show` tells you a VF exists. It does not tell you which guest owns it, whether the guest is running, whether two guest configs are fighting over the same address, or whether a `vfio-pci` binding has been orphaned by a deleted VM. This fills that gap.
