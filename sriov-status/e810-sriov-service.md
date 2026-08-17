@@ -2,7 +2,7 @@
 sudo nano /etc/systemd/system/e810-sriov.service
 ```
 
-# *PASTE THE BELOW INTO THE FILE:*
+# PASTE THE BELOW INTO THE FILE AND EDIT VF MAC, VLAN, SPOOFCHECK, TRUST values as per your requirements:
 ```
 [Unit]
 Description=Intel E810 SR-IOV VF Setup (ice1 + ice2)
@@ -81,7 +81,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 ```
-## **Activate the Service**
+## ***Activate the Service***
 ```bash
 sudo systemctl enable --now e810-sriov.service
 ```
