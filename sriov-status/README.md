@@ -4,7 +4,7 @@
 
 Nothing is statically configured. Physical functions, PCI addresses, bond/bridge masters, VF state and guest ownership are all discovered at runtime, so the same script works unmodified on every host in a cluster.
 
-![example output](docs/screenshot.png)
+![example output](screenshot.png)
 
 ```
 ━━ ice2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
