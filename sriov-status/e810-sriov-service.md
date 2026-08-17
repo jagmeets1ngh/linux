@@ -2,7 +2,7 @@
 sudo nano /etc/systemd/system/e810-sriov.service
 ```
 
-# PASTE THE BELOW INTO THE FILE AND EDIT VF MAC, VLAN, SPOOFCHECK, TRUST values as per your requirements:
+# Paste the below into the file:
 ```
 [Unit]
 Description=Intel E810 SR-IOV VF Setup (ice1 + ice2)
@@ -15,7 +15,6 @@ Type=oneshot
 RemainAfterExit=yes
 
 ExecStart=/usr/bin/ip link set ice2 up
-
 ExecStart=/usr/bin/bash -c 'echo 24 > /sys/class/net/ice2/device/sriov_numvfs'
 
 1a:PVE#:NIC#:VLAN_ID:VM_HH:VM_LL     1a = SR-IOV VF
@@ -27,19 +26,14 @@ ExecStart=/usr/bin/ip link set ice2 vf 0 mac 1a:01:02:71:01:00
 ExecStart=/usr/bin/ip link set ice2 vf 1 mac 1a:01:02:72:01:00
 ExecStart=/usr/bin/ip link set ice2 vf 2 mac 1a:01:02:74:01:00
 ExecStart=/usr/bin/ip link set ice2 vf 3 mac 1a:01:02:75:01:00
-
 # VM 1011 - External, Storage
 ExecStart=/usr/bin/ip link set ice2 vf 4 mac 1a:01:02:71:10:11
 ExecStart=/usr/bin/ip link set ice2 vf 5 mac 1a:01:02:74:10:11
-
 # VM 1012 - External, Storage
 ExecStart=/usr/bin/ip link set ice2 vf 6 mac 1a:01:02:71:10:12
 ExecStart=/usr/bin/ip link set ice2 vf 7 mac 1a:01:02:74:10:12
-
 # VM 1013 - External, Storage
 ExecStart=/usr/bin/ip link set ice2 vf 8 mac 1a:01:02:71:10:13
-
-
 
 #VLAN ASSIGNMENTS
 ExecStart=/usr/bin/ip link set ice2 vf 0 vlan 71
@@ -51,7 +45,6 @@ ExecStart=/usr/bin/ip link set ice2 vf 5 vlan 74
 ExecStart=/usr/bin/ip link set ice2 vf 6 vlan 71
 ExecStart=/usr/bin/ip link set ice2 vf 7 vlan 74
 ExecStart=/usr/bin/ip link set ice2 vf 8 vlan 71
-
 
 #SPOOFCHECK
 ExecStart=/usr/bin/ip link set ice2 vf 0 spoofchk on
@@ -81,7 +74,9 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 ```
-## ***Activate the Service***
+Edit the SRIOV VF - MAC, VLAN, SPOOFCHECK, TRUST values as per your requirements
+
+## **Activate the Service**
 ```bash
 sudo systemctl enable --now e810-sriov.service
 ```
