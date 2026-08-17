@@ -2,7 +2,7 @@
 sudo nano /etc/systemd/system/e810-sriov.service
 ```
 
-# **PASTE THE BELOW INTO THE FILE:**
+# *PASTE THE BELOW INTO THE FILE:*
 ```
 [Unit]
 Description=Intel E810 SR-IOV VF Setup (ice1 + ice2)
