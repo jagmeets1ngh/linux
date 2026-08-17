@@ -35,8 +35,8 @@ No Python, no `jq`, no compiled dependencies.
 ## Install
 
 ```bash
-git clone https://github.com/YOUR-USER/sriov-status.git
-cd sriov-status
+[git clone https://github.com/YOUR-USER/sriov-status.git](https://github.com/jagmeets1ngh/linux.git)
+cd linux/sriov-status
 sudo ./install.sh
 ```
 
